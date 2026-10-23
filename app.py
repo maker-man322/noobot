@@ -89,6 +89,44 @@ def try_fetch(url, use_token, save_as=None):
     return info
 
 
+GRAPH = "https://graph.instagram.com/v26.0"
+
+
+def scrub(text):
+    """Never let the access token appear in logs or reports."""
+    text = str(text)
+    return text.replace(IG_ACCESS_TOKEN, "***") if IG_ACCESS_TOKEN else text
+
+
+def graph_lookup(media_id):
+    """Official route: ask Meta's own API for this reel's media record.
+    Tries several field lists, because asking for a field that isn't allowed
+    makes the whole request fail."""
+    if not IG_ACCESS_TOKEN:
+        return [{"note": "IG_ACCESS_TOKEN not set in Render, so this lookup was skipped"}]
+    field_sets = [
+        "id,media_type,media_product_type,media_url,permalink,caption,timestamp,username,media_audio_type",
+        "id,media_type,media_url,permalink,caption,timestamp",
+        "id,permalink",
+    ]
+    attempts = []
+    for fields in field_sets:
+        try:
+            r = requests.get(f"{GRAPH}/{media_id}",
+                             params={"fields": fields, "access_token": IG_ACCESS_TOKEN}, timeout=30)
+            try:
+                body = r.json()
+            except ValueError:
+                body = {"raw": r.text[:500]}
+        except Exception as e:
+            attempts.append({"fields": fields, "error": scrub(repr(e))})
+            continue
+        attempts.append({"fields": fields, "status": r.status_code, "body": body})
+        if r.status_code == 200:
+            break
+    return attempts
+
+
 def process_payload(data):
     for entry in data.get("entry", []):
         for m in entry.get("messaging", []):
@@ -102,6 +140,7 @@ def process_payload(data):
                     "attachment_type": att.get("type"),
                     "attachment_payload": payload,
                     "message_mid": message.get("mid"),
+                    "sender_id": (m.get("sender") or {}).get("id"),
                     "downloads": [],
                     "rechecks": [],
                 }
@@ -109,8 +148,21 @@ def process_payload(data):
                     fname = f"{stamp}-{i}-{att.get('type')}.mp4"
                     first = try_fetch(url, use_token=False, save_as=fname)
                     record["downloads"].append(first)
-                    if not first.get("looks_like_video") and IG_ACCESS_TOKEN:
+                    if (not first.get("looks_like_video") and IG_ACCESS_TOKEN
+                            and urlparse(url).netloc != "www.instagram.com"):
                         record["downloads"].append(try_fetch(url, use_token=True, save_as=fname))
+                reel_id = payload.get("reel_video_id")
+                if att.get("type") == "ig_reel" and reel_id:
+                    attempts = graph_lookup(reel_id)
+                    record["graph_lookup"] = attempts
+                    media_url = None
+                    for a in attempts:
+                        if a.get("status") == 200:
+                            media_url = (a.get("body") or {}).get("media_url")
+                    record["graph_media_url_present"] = bool(media_url)
+                    if media_url:
+                        record["graph_download"] = try_fetch(media_url, use_token=False,
+                                                             save_as=f"{stamp}-{i}-graph.mp4")
                 with lock:
                     results = load_results()
                     results.append(record)
@@ -174,6 +226,32 @@ def privacy():
 <h2>Contact</h2>
 <p>{email}</p>
 </body></html>"""
+
+
+@app.route("/send")
+def send_test():
+    """Send a plain text message (for example a reel link) from the bot to someone
+    who messaged it in the last 24 hours. Used to see how a link looks in the chat.
+    Put text= last in the address."""
+    check_key()
+    to = request.args.get("to", "")
+    text = request.args.get("text", "")
+    if not IG_ACCESS_TOKEN:
+        return jsonify({"error": "IG_ACCESS_TOKEN is not set in Render"}), 400
+    if not to or not text:
+        return jsonify({"error": "need ?to=<sender_id>&text=<message>"}), 400
+    try:
+        r = requests.post(f"{GRAPH}/me/messages",
+                          headers={"Authorization": f"Bearer {IG_ACCESS_TOKEN}"},
+                          json={"recipient": {"id": to}, "message": {"text": text[:900]}},
+                          timeout=30)
+        try:
+            body = r.json()
+        except ValueError:
+            body = {"raw": r.text[:500]}
+        return jsonify({"status": r.status_code, "response": body})
+    except Exception as e:
+        return jsonify({"error": scrub(repr(e))}), 500
 
 
 @app.route("/report")
