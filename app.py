@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 
 import requests
 from flask import Flask, abort, jsonify, request, send_from_directory
+from markupsafe import escape
 
 app = Flask(__name__)
 
@@ -23,6 +24,7 @@ VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "")      # you invent this; paste 
 APP_SECRET = os.environ.get("APP_SECRET", "")          # Meta app secret (checks messages really come from Meta)
 REPORT_KEY = os.environ.get("REPORT_KEY", "")          # you invent this; protects /report, /recheck, /videos
 IG_ACCESS_TOKEN = os.environ.get("IG_ACCESS_TOKEN", "")  # optional; used only for a second download attempt
+CONTACT_EMAIL = os.environ.get("CONTACT_EMAIL", "your-email-not-set@example.com")  # shown on /privacy
 DATA_DIR = os.environ.get("DATA_DIR", "data")
 MAX_VIDEO_BYTES = 100 * 1024 * 1024
 
@@ -150,6 +152,28 @@ def receive():
     # Reply fast so Meta doesn't retry; do the download test in the background.
     threading.Thread(target=process_payload, args=(data,), daemon=True).start()
     return "ok", 200
+
+
+@app.route("/privacy")
+def privacy():
+    email = escape(CONTACT_EMAIL)
+    return f"""<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy Policy - noobody.bot test</title>
+<style>body{{font-family:sans-serif;max-width:700px;margin:2rem auto;padding:0 1rem;line-height:1.6}}</style>
+</head><body>
+<h1>Privacy Policy</h1>
+<p><strong>noobody.bot (private test)</strong></p>
+<p>This is a small private test of an Instagram messaging tool. It is used only by a few invited test accounts.</p>
+<h2>What we collect</h2>
+<p>Messages sent to the Instagram account noobody.bot, including shared reel links, captions and media, and the Instagram ID of the account that sent them.</p>
+<h2>How we use it</h2>
+<p>Only to test whether shared content can be received and processed. It is not sold, not shared with third parties, and not used for advertising.</p>
+<h2>Storage and deletion</h2>
+<p>Test data is kept temporarily on our server and deleted when the test ends. To ask for your data to be deleted sooner, email us at the address below.</p>
+<h2>Contact</h2>
+<p>{email}</p>
+</body></html>"""
 
 
 @app.route("/report")
