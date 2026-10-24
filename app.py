@@ -11,6 +11,7 @@ import hmac
 import json
 import os
 import threading
+import time
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -230,28 +231,41 @@ def privacy():
 
 @app.route("/send")
 def send_test():
-    """Send a plain text message (for example a reel link) from the bot to someone
-    who messaged it in the last 24 hours. Used to see how a link looks in the chat.
-    Put text= last in the address."""
+    """Send a message from the bot to someone who messaged it in the last 24 hours.
+    text= is an optional sentence. link= is an optional reel link, sent as its own
+    separate message so Instagram shows a clean preview card with no blue text.
+    If both are given, the sentence goes first, then the link."""
     check_key()
     to = request.args.get("to", "")
     text = request.args.get("text", "")
+    link = request.args.get("link", "")
     if not IG_ACCESS_TOKEN:
         return jsonify({"error": "IG_ACCESS_TOKEN is not set in Render"}), 400
-    if not to or not text:
-        return jsonify({"error": "need ?to=<sender_id>&text=<message>"}), 400
-    try:
+    if not to or not (text or link):
+        return jsonify({"error": "need ?to=<sender_id> and text= and/or link="}), 400
+
+    def post_message(msg):
         r = requests.post(f"{GRAPH}/me/messages",
                           headers={"Authorization": f"Bearer {IG_ACCESS_TOKEN}"},
-                          json={"recipient": {"id": to}, "message": {"text": text[:900]}},
+                          json={"recipient": {"id": to}, "message": {"text": msg[:900]}},
                           timeout=30)
         try:
             body = r.json()
         except ValueError:
             body = {"raw": r.text[:500]}
-        return jsonify({"status": r.status_code, "response": body})
+        return {"status": r.status_code, "response": body}
+
+    results = []
+    try:
+        if text:
+            results.append(post_message(text))
+        if text and link:
+            time.sleep(1.5)  # keep the order: sentence first, card second
+        if link:
+            results.append(post_message(link))
     except Exception as e:
-        return jsonify({"error": scrub(repr(e))}), 500
+        return jsonify({"error": scrub(repr(e)), "sent_so_far": results}), 500
+    return jsonify({"sent": results})
 
 
 @app.route("/report")
