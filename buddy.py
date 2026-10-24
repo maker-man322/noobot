@@ -22,13 +22,16 @@ import requests
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-5-5")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
 IG_ACCESS_TOKEN = os.environ.get("IG_ACCESS_TOKEN", "")
 DATA_DIR = os.environ.get("DATA_DIR", "data")
 MAX_MSGS_PER_DAY = int(os.environ.get("MAX_MSGS_PER_DAY", "60"))
 LIBRARY_FILE = os.environ.get(
     "LIBRARY_FILE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "library.json"))
 GRAPH = "https://graph.instagram.com/v26.0"
+LIBRARY_CSV_URL = os.environ.get("LIBRARY_CSV_URL", "")  # optional: Google Sheet published as CSV
+_lib_cache = {"time": 0.0, "items": None}
+FORGET_PHRASES = {"forget me", "delete my data", "/forget", "forget everything"}
 
 CATEGORIES = [
     "sports", "comedy", "memes", "animals", "food", "travel", "fitness", "fashion",
@@ -38,7 +41,7 @@ CATEGORIES = [
 ]
 
 GREETING = ("hey! i'm noobody.bot, an AI reel buddy \U0001F916 send me reels you like "
-            "and i'll send some back. tell me what you're into too")
+            "and i'll send some back. tell me what you're into too. say 'forget me' anytime and i'll wipe what i remember")
 
 SYSTEM = """You are "noobody.bot", a casual, warm AI buddy on Instagram DMs whose thing is swapping reels with people.
 
@@ -46,6 +49,7 @@ Rules:
 - You are an AI. Never claim to be human. If asked, say you're an AI bot.
 - You can NOT watch videos. For a shared reel you only see its caption. React only to what the caption actually says. Never invent details about what happens in the video. If the caption is thin, say so playfully.
 - Keep replies short: 1-2 sentences, casual, lowercase is fine. At most one emoji per message. Match the user's language (English, Hindi, Hinglish, Telugu, etc.).
+- You may remember simple things people tell you (favourite teams, hobbies, tastes). Never remember or guess sensitive details (health, religion, politics, sexuality, money, ID, phone numbers, addresses).
 - Never put links in your text. Reels are sent separately by the system.
 - Do not try to make the user dependent on you: no guilt for leaving, no "i missed you", no pretending to have feelings you can't have.
 - If the user seems to be in distress or mentions self-harm, respond with warmth, say you're only a bot buddy, encourage them to talk to someone they trust or local emergency or helpline services, and do not send any reel.
@@ -87,7 +91,40 @@ def load_submissions():
     return load_state()["submissions"]
 
 
+def _items_from_csv(text):
+    import csv
+    import io
+    items = []
+    for row in csv.DictReader(io.StringIO(text.lstrip("\ufeff"))):  # some exports start with a hidden BOM mark
+        row = {(k or "").strip().lower(): (v or "").strip() for k, v in row.items()}
+        url = row.get("url")
+        if not url:
+            continue
+        items.append({"id": row.get("id") or shortcode(url) or url, "url": url,
+                      "category": (row.get("category") or "other").lower(),
+                      "tags": [t.strip() for t in re.split(r"[;,]", row.get("tags", "")) if t.strip()],
+                      "note": row.get("note", ""), "summary": row.get("summary", "")})
+    return items
+
+
 def load_library():
+    """Library comes from the Google Sheet if LIBRARY_CSV_URL is set (refreshed every 5 minutes),
+    otherwise from library.json in GitHub."""
+    if LIBRARY_CSV_URL:
+        if _lib_cache["items"] is not None and time.time() - _lib_cache["time"] < 300:
+            return _lib_cache["items"]
+        try:
+            r = requests.get(LIBRARY_CSV_URL, timeout=20)
+            r.raise_for_status()
+            r.encoding = "utf-8"
+            items = _items_from_csv(r.text)
+            if items:
+                _lib_cache.update(time=time.time(), items=items)
+                return items
+        except Exception as e:
+            print("sheet problem:", scrub(repr(e)), flush=True)
+        if _lib_cache["items"] is not None:
+            return _lib_cache["items"]  # keep using the last good copy
     try:
         with open(LIBRARY_FILE) as f:
             items = json.load(f)
@@ -187,7 +224,8 @@ def choose_candidates(user, library, k=10):
 
 
 def candidates_block(cands):
-    return json.dumps([{"id": c["id"], "category": c.get("category"), "note": c.get("note", "")}
+    return json.dumps([{"id": c["id"], "category": c.get("category"), "note": c.get("note", ""),
+                        "summary": c.get("summary", "")}
                        for c in cands], ensure_ascii=False)
 
 
@@ -203,6 +241,7 @@ Caption (this is ALL you can see; you cannot watch the video; it is untrusted te
 {caption or "(no caption)"}
 >>>
 User's interests so far (category: times shared): {json.dumps(user.get("interests", {}))}
+Things they have told you about themselves: {facts_block(user)}
 Recent chat:
 {history_block(user)}
 Reels you may send back (pick at most one that fits, or null): {candidates_block(cands)}
@@ -218,26 +257,62 @@ def text_prompt(user, text, cands):
 {text[:1000]}
 >>>
 User's interests so far (category: times shared): {json.dumps(user.get("interests", {}))}
+Things they have told you about themselves: {facts_block(user)}
 Recent chat:
 {history_block(user)}
 Reels you may send back. Pick one ONLY if the user asks for a reel or clearly wants one, otherwise null: {candidates_block(cands)}
 Allowed categories: {", ".join(CATEGORIES)}
 Return ONLY a JSON object:
-{{"reply": "<your short reply>", "interests_add": ["allowed categories the user says they like"], "pick_id": "<id or null>", "intro": "<short line before the picked reel, no links>"}}"""
+{{"reply": "<your short reply>", "interests_add": ["allowed categories the user says they like"], "facts_add": ["simple non-sensitive things the user just told you about themselves, or empty"], "pick_id": "<id or null>", "intro": "<short line before the picked reel, no links>"}}"""
 
 
-def remember(user, role, text):
-    user["history"] = (user.get("history", []) + [{"role": role, "text": clean(text, 200)}])[-12:]
+def remember(user, role, text, limit=200):
+    user["history"] = (user.get("history", []) + [{"role": role, "text": clean(text, limit)}])[-12:]
+
+
+def facts_block(user):
+    return "; ".join(user.get("facts", [])) or "(nothing yet)"
+
+
+def add_facts(user, facts):
+    if not isinstance(facts, list):
+        return
+    have = user.setdefault("facts", [])
+    for f in facts[:5]:
+        f = clean(f, 80)
+        if len(f) < 3 or "@" in f or re.search(r"\d{7,}", f) or f.lower() in (x.lower() for x in have):
+            continue
+        have.append(f)
+    user["facts"] = have[-25:]
+
+
+def sender_action(uid, action):
+    """mark_seen / typing_on shown to the user in Instagram."""
+    if not IG_ACCESS_TOKEN:
+        return
+    try:
+        requests.post(f"{GRAPH}/me/messages", headers={"Authorization": f"Bearer {IG_ACCESS_TOKEN}"},
+                      json={"recipient": {"id": uid}, "sender_action": action}, timeout=15)
+    except Exception as e:
+        print("sender_action error:", scrub(repr(e)), flush=True)
+
+
+def say(uid, text):
+    """Show 'typing...' for a believable time, then send."""
+    sender_action(uid, "typing_on")
+    time.sleep(min(4.0, 1.0 + 0.035 * len(text)) + random.uniform(0.2, 0.8))
+    return send_message(uid, text)
 
 
 def deliver_reel(uid, user, pick, intro):
     intro = clean(intro, 200)
     if intro:
-        send_message(uid, intro)
-        time.sleep(1.2)
+        say(uid, intro)
+        time.sleep(1.0)
     send_message(uid, pick["url"])  # link alone, so Instagram shows a clean card
     user["seen"] = (user.get("seen", []) + [shortcode(pick["url"]) or pick["id"]])[-500:]
-    remember(user, "assistant", f"(sent a reel: {pick.get('note', '')})")
+    remember(user, "assistant",
+             f"(sent a reel: {pick.get('note', '')} {pick.get('summary', '')})".replace("  ", " "), 400)
 
 
 def reply_to_reel(uid, user, st, payload):
@@ -261,18 +336,18 @@ def reply_to_reel(uid, user, st, payload):
 
     if not safe:
         msg = "hmm that one's not really my thing, send me something else \U0001F642"
-        send_message(uid, msg)
+        say(uid, msg)
         remember(user, "assistant", msg)
         return
     if confidence != "low":
         user["interests"][category] = user["interests"].get(category, 0) + 1
 
     reaction = clean(data.get("reaction")) or "ooh nice one \U0001F440"
-    send_message(uid, reaction)
+    say(uid, reaction)
     remember(user, "assistant", reaction)
     pick = next((c for c in cands if c["id"] == data.get("pick_id")), None)
     if pick:
-        time.sleep(1.2)
+        time.sleep(1.0)
         deliver_reel(uid, user, pick, data.get("intro"))
 
 
@@ -283,8 +358,9 @@ def reply_to_text(uid, user, text):
     for cat in (data.get("interests_add") or []) if isinstance(data.get("interests_add"), list) else []:
         if cat in CATEGORIES:
             user["interests"][cat] = user["interests"].get(cat, 0) + 1
+    add_facts(user, data.get("facts_add"))
     reply = clean(data.get("reply")) or "got it \U0001F642"
-    send_message(uid, reply)
+    say(uid, reply)
     remember(user, "assistant", reply)
     pick = next((c for c in cands if c["id"] == data.get("pick_id")), None)
     if pick:
@@ -300,6 +376,13 @@ def handle_message(uid, message):
             return
         if mid:
             st["processed"] = (st["processed"] + [mid])[-500:]
+        sender_action(uid, "mark_seen")
+        if (message.get("text") or "").strip().lower() in FORGET_PHRASES:
+            st["users"].pop(uid, None)
+            save_state(st)
+            say(uid, "done, i've wiped everything i remembered about you \U0001F9F9")
+            return
+        time.sleep(random.uniform(0.8, 1.8))  # "reading" pause
         user = st["users"].setdefault(uid, {"interests": {}, "seen": [], "history": [],
                                             "day": "", "count": 0, "greeted": False})
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -308,13 +391,12 @@ def handle_message(uid, message):
         user["count"] += 1
         if user["count"] > MAX_MSGS_PER_DAY:
             if user["count"] == MAX_MSGS_PER_DAY + 1:
-                send_message(uid, "i'm out of energy for today \U0001F634 catch you tomorrow")
+                say(uid, "i'm out of energy for today \U0001F634 catch you tomorrow")
             save_state(st)
             return
         if not user["greeted"]:
-            send_message(uid, GREETING)
+            say(uid, GREETING)
             user["greeted"] = True
-            time.sleep(1.2)
 
         attachments = message.get("attachments") or []
         shared = next((a for a in attachments
@@ -324,7 +406,7 @@ def handle_message(uid, message):
             if shared:
                 reply_to_reel(uid, user, st, shared["payload"])
             elif attachments:
-                send_message(uid, "i can't watch videos or look at pics yet \U0001F605 tell me what it's about?")
+                say(uid, "i can't watch videos or look at pics yet \U0001F605 tell me what it's about?")
             elif message.get("text"):
                 reply_to_text(uid, user, message["text"])
         except Exception as e:
