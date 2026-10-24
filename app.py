@@ -224,7 +224,7 @@ def privacy():
 <h2>What we collect</h2>
 <p>Messages sent to the Instagram account noobody.bot, including shared reel links, captions and media, and the Instagram ID of the account that sent them.</p>
 <h2>How we use it</h2>
-<p>Only to test whether shared content can be received and processed. It is not sold, not shared with third parties, and not used for advertising.</p>
+<p>Only to test whether shared content can be received and processed. It is not sold and not used for advertising. To write replies, message text and reel captions are sent to an AI provider (Google Gemini or Anthropic), which may process them under its own terms.</p>
 <h2>Storage and deletion</h2>
 <p>Test data is kept temporarily on our server and deleted when the test ends. To ask for your data to be deleted sooner, email us at the address below.</p>
 <h2>Contact</h2>
