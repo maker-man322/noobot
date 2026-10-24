@@ -5,7 +5,8 @@ Reel buddy: replies to messages sent to the bot account.
                  one reel from library.json that fits.
 - Text        -> short friendly reply; remembers interests; can send a reel on request.
 
-Turn on with BUDDY_ENABLED=1 and ANTHROPIC_API_KEY in Render.
+Turn on with BUDDY_ENABLED=1 and an AI key in Render: GEMINI_API_KEY (free tier available)
+or ANTHROPIC_API_KEY.
 Note: the bot only ever sees the caption of a shared reel, never the video.
 """
 import json
@@ -20,6 +21,8 @@ import requests
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-5-5")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 IG_ACCESS_TOKEN = os.environ.get("IG_ACCESS_TOKEN", "")
 DATA_DIR = os.environ.get("DATA_DIR", "data")
 MAX_MSGS_PER_DAY = int(os.environ.get("MAX_MSGS_PER_DAY", "60"))
@@ -131,6 +134,35 @@ def ask_claude(prompt):
     return "".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text")
 
 
+def ask_gemini(prompt):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+    body = {"systemInstruction": {"parts": [{"text": SYSTEM}]},
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {"maxOutputTokens": 800, "temperature": 0.9,
+                                 "responseMimeType": "application/json"}}
+    headers = {"x-goog-api-key": GEMINI_API_KEY, "content-type": "application/json"}
+    for attempt in range(2):
+        r = requests.post(url, headers=headers, json=body, timeout=45)
+        if r.status_code == 429 and attempt == 0:  # free tier rate limit: wait and try once more
+            time.sleep(4)
+            continue
+        break
+    if r.status_code != 200:
+        print("gemini error:", r.status_code, r.text[:300], flush=True)
+    r.raise_for_status()
+    cands = r.json().get("candidates") or []
+    parts = ((cands[0].get("content") or {}).get("parts") or []) if cands else []
+    return "".join(p.get("text", "") for p in parts)
+
+
+def ask_ai(prompt):
+    if GEMINI_API_KEY:
+        return ask_gemini(prompt)
+    if ANTHROPIC_API_KEY:
+        return ask_claude(prompt)
+    raise RuntimeError("No AI key set: add GEMINI_API_KEY (free) or ANTHROPIC_API_KEY in Render")
+
+
 def parse_json(text):
     try:
         return json.loads(text[text.index("{"): text.rindex("}") + 1])
@@ -213,7 +245,7 @@ def reply_to_reel(uid, user, st, payload):
     url = payload.get("url") or ""
     code = shortcode(url) or str(payload.get("reel_video_id") or url)
     cands = choose_candidates(user, load_library())
-    data = parse_json(ask_claude(reel_prompt(user, caption, cands))) or {}
+    data = parse_json(ask_ai(reel_prompt(user, caption, cands))) or {}
 
     category = data.get("category") if data.get("category") in CATEGORIES else "other"
     confidence = data.get("confidence") if data.get("confidence") in ("high", "medium", "low") else "low"
@@ -246,7 +278,7 @@ def reply_to_reel(uid, user, st, payload):
 
 def reply_to_text(uid, user, text):
     cands = choose_candidates(user, load_library())
-    data = parse_json(ask_claude(text_prompt(user, text, cands))) or {}
+    data = parse_json(ask_ai(text_prompt(user, text, cands))) or {}
     remember(user, "user", text)
     for cat in (data.get("interests_add") or []) if isinstance(data.get("interests_add"), list) else []:
         if cat in CATEGORIES:
