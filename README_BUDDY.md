@@ -9,16 +9,23 @@ What it does: when someone messages `noobody.bot`, it replies like a casual AI b
 Add these files and replace the old one: `buddy.py` (new), `library.json` (new), `app.py` (replace).
 Commit, and wait for Render to show "Live".
 
-## 2. Get an Anthropic API key
-- Create an account at console.anthropic.com, add a small amount of credit, and
-  **set a monthly spend limit** there.
-- Create an API key and paste it ONLY into Render. Never into a chat or a file.
+## 2. Get a free Gemini API key
+- Go to aistudio.google.com, sign in with your Google account, and use **Get API key** > **Create API key**.
+- This key is separate from your Gemini Pro subscription. The subscription powers the Gemini app,
+  while the API has its own free tier with rate limits. Google has said new AI Studio users may be
+  asked to start on a prepaid plan, so if it asks for a payment, stop and tell me.
+- On the free tier, Google may use what you send to improve its products. Only test with people who
+  know their messages go to Google. Before inviting real users, move to a paid tier.
+- Paste the key ONLY into Render. Never into a chat or a file.
 
 ## 3. Add these in Render > Environment
-- `ANTHROPIC_API_KEY` = your key
+- `GEMINI_API_KEY` = your key
 - `BUDDY_ENABLED` = `1`
 - `IG_ACCESS_TOKEN` = must already be set (the token for noobody.bot)
-- Optional: `CLAUDE_MODEL` (default `claude-haiku-5-5`) and `MAX_MSGS_PER_DAY` (default 60 per person)
+- Optional: `GEMINI_MODEL` (default `gemini-2.5-flash-lite`). If the logs say the model isn't found,
+  pick a Flash or Flash-Lite model name from the model list in AI Studio.
+- Optional: `MAX_MSGS_PER_DAY` (default 60 per person). Free-tier limits are low, so a lower number is fine.
+- If you later get an Anthropic key, add `ANTHROPIC_API_KEY` instead and remove the Gemini one.
 
 To switch the buddy off, set `BUDDY_ENABLED` to `0`.
 
@@ -49,5 +56,7 @@ Shared reels are NEVER sent to other people automatically.
 - It handles one message at a time, which is fine for a few testers, not for hundreds.
 - Only accounts with a role on your Meta app can message it until the app passes Meta's review.
 - It can't verify anyone's age. The bot is told to stop if someone says they are under 18.
+- Free-tier Gemini limits are small. If many people message at once, some replies will fail with a
+  "brain glitched" message.
 - Replies are written by an AI and can be wrong or awkward. Read the chats of your testers (with
   their permission) before inviting more people.
