@@ -22,7 +22,7 @@ Commit, and wait for Render to show "Live".
 - `GEMINI_API_KEY` = your key
 - `BUDDY_ENABLED` = `1`
 - `IG_ACCESS_TOKEN` = must already be set (the token for noobody.bot)
-- Optional: `GEMINI_MODEL` (default `gemini-2.5-flash-lite`). If the logs say the model isn't found,
+- Optional: `GEMINI_MODEL` (default `gemini-3.5-flash-lite`). If the logs say the model isn't found,
   pick a Flash or Flash-Lite model name from the model list in AI Studio.
 - Optional: `MAX_MSGS_PER_DAY` (default 60 per person). Free-tier limits are low, so a lower number is fine.
 - If you later get an Anthropic key, add `ANTHROPIC_API_KEY` instead and remove the Gemini one.
@@ -44,6 +44,32 @@ Valid categories: sports, comedy, memes, animals, food, travel, fitness, fashion
 tech, ai, science, space, education, news, music, movies_tv, gaming, health, cars, art_design,
 relationships, conspiracies, local_india, other.
 The two entries in the file are placeholders from your own tests. Replace them.
+
+## 5b. Easier: keep the library in a Google Sheet
+Editing GitHub for every reel is slow. A Google Sheet is faster and works from your phone.
+1. Make a new Google Sheet and import `library_template.csv` (File > Import), or copy its columns:
+   `url, category, tags, note, summary`.
+2. Add one row per reel. `url` and `category` are required. `note` is one line saying what the reel is.
+   `summary` is 2 to 3 sentences of what it actually says, so the bot can talk about it later.
+3. Publish it: **File > Share > Publish to web**, choose the sheet tab and the **CSV** format,
+   click Publish, and copy the link.
+4. In Render > Environment add `LIBRARY_CSV_URL` = that link.
+The bot re-reads the sheet every 5 minutes. If the sheet can't be read it keeps the last good copy, and
+falls back to `library.json`. Anyone with the link can read the sheet, so only put public reels in it.
+
+Why the notes matter: the bot cannot watch videos. Whatever you write in `note` and `summary` is
+everything it knows about that reel, so write what the reel really says, not what you guess.
+
+## What the bot remembers about each person
+- Interests (a tally per category), reels already seen, the last 12 messages, and simple things they
+  tell it ("supports RCB"). It is told not to keep sensitive things (health, religion, politics, money,
+  phone numbers, addresses). That is an instruction to an AI, not a guarantee, so read some chats.
+- Saying "forget me" wipes everything the bot holds about that person.
+- Everything is lost when Render restarts the free server. A free database is the next step.
+
+## Seen and typing
+The bot marks messages as seen, pauses briefly, shows the typing bubble for a time that grows with the
+message length, then sends. The pauses are in the `say()` function in `buddy.py`.
 
 ## 6. Review what people share
 Open `https://YOUR-ADDRESS/submissions?key=YOUR_REPORT_KEY`. It lists shared reels with the AI's
