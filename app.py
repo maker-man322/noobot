@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 import requests
+import buddy
 from flask import Flask, abort, jsonify, request, send_from_directory
 from markupsafe import escape
 
@@ -204,6 +205,8 @@ def receive():
     print("RAW PAYLOAD:", json.dumps(data, indent=2), flush=True)
     # Reply fast so Meta doesn't retry; do the download test in the background.
     threading.Thread(target=process_payload, args=(data,), daemon=True).start()
+    if os.environ.get("BUDDY_ENABLED") == "1":
+        threading.Thread(target=buddy.process, args=(data,), daemon=True).start()
     return "ok", 200
 
 
@@ -266,6 +269,13 @@ def send_test():
     except Exception as e:
         return jsonify({"error": scrub(repr(e)), "sent_so_far": results}), 500
     return jsonify({"sent": results})
+
+
+@app.route("/submissions")
+def submissions():
+    """Reels users shared, with the AI's suggested category, waiting for a human to review."""
+    check_key()
+    return jsonify(buddy.load_submissions())
 
 
 @app.route("/report")
