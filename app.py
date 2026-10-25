@@ -226,7 +226,7 @@ def privacy():
 <h2>How we use it</h2>
 <p>Only to test whether shared content can be received and processed. It is not sold and not used for advertising. To write replies, message text and reel captions are sent to an AI provider (Google Gemini or Anthropic), which may process them under its own terms.</p>
 <h2>Storage and deletion</h2>
-<p>Test data is kept temporarily on our server and deleted when the test ends. To ask for your data to be deleted sooner, email us at the address below.</p>
+<p>To let the bot remember you, your recent messages, interests and simple facts you tell it are stored in a hosted database. Say \'forget me\' to the bot, or email us at the address below, and we delete them. Everything is deleted when the test ends.</p>
 <h2>Contact</h2>
 <p>{email}</p>
 </body></html>"""
