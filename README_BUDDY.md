@@ -46,6 +46,20 @@ If you skip this step, the bot still works but loses its memory on every restart
 - `GEMINI_MODEL`: if replies still feel flat, try a larger Flash model from AI Studio's model list.
   Bigger models write better but have lower free limits.
 
+## 3c. Optional: let the bot message first, now and then
+Instagram only lets a bot message someone within 24 hours of THEIR last message. So the bot can start a
+conversation or send a reel during the day, but only to people who wrote to it recently.
+1. In Render > Environment add `NUDGES_ENABLED` = `1`.
+2. Use a free timer such as cron-job.org to open this address every 10 minutes (it also keeps the free
+   Render server awake):
+   `https://YOUR-ADDRESS/tick?key=YOUR_REPORT_KEY`
+3. Built-in limits: only people who messaged in the last 22 hours, only between 10:00 and 21:30 India
+   time, at most 2 per person per day (`NUDGES_PER_DAY`), never after two unanswered ones, never within 24
+   hours of a crisis moment, and only a gentle message (no reel) within 12 hours of a low moment.
+   Anyone can say "stop sending me stuff" and the bot stops. Change the hours with `NUDGE_START_HOUR`,
+   `NUDGE_END_HOUR` and `TZ_OFFSET_MINUTES`.
+Instagram watches for people who ignore or block bots, so keep this light.
+
 ## 4. Test
 From your tester account, share a reel to `noobody.bot`. Expected: an intro line (first time only),
 a reaction, then a sentence and a reel card. Then send a text like "send me something about science".
@@ -81,6 +95,7 @@ everything it knows about that reel, so write what the reel really says, not wha
 - Interests (a tally per category), reels already seen, the last 12 messages, and simple things they
   tell it ("supports RCB"). It is told not to keep sensitive things (health, religion, politics, money,
   phone numbers, addresses). That is an instruction to an AI, not a guarantee, so read some chats.
+- A short note on how they text and what they enjoy (never feelings or health), used to feel more personal.
 - Saying "forget me" wipes everything the bot holds about that person.
 - With Upstash set up, memory survives restarts. Without it, everything is lost on restart.
 
