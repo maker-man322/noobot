@@ -29,6 +29,23 @@ Commit, and wait for Render to show "Live".
 
 To switch the buddy off, set `BUDDY_ENABLED` to `0`.
 
+## 3b. Give the bot a permanent memory (Upstash, free)
+Without this, the bot forgets everything whenever Render restarts the free server. That is why it
+introduced itself again and again.
+1. Go to upstash.com and sign up (free, no card).
+2. Create a **Redis** database. Pick the region closest to your Render server.
+3. On the database page, find the **REST API** section and copy `UPSTASH_REDIS_REST_URL` and
+   `UPSTASH_REDIS_REST_TOKEN`.
+4. Add both in Render > Environment with those exact names. Save and wait for "Live".
+The free plan allows 500,000 commands a month and 256 MB, which is far more than a test needs.
+If you skip this step, the bot still works but loses its memory on every restart.
+
+## Optional settings
+- `DEBOUNCE_SECONDS` (default 3): how long the bot waits for you to finish typing several messages
+  before it answers them together.
+- `GEMINI_MODEL`: if replies still feel flat, try a larger Flash model from AI Studio's model list.
+  Bigger models write better but have lower free limits.
+
 ## 4. Test
 From your tester account, share a reel to `noobody.bot`. Expected: an intro line (first time only),
 a reaction, then a sentence and a reel card. Then send a text like "send me something about science".
@@ -65,7 +82,7 @@ everything it knows about that reel, so write what the reel really says, not wha
   tell it ("supports RCB"). It is told not to keep sensitive things (health, religion, politics, money,
   phone numbers, addresses). That is an instruction to an AI, not a guarantee, so read some chats.
 - Saying "forget me" wipes everything the bot holds about that person.
-- Everything is lost when Render restarts the free server. A free database is the next step.
+- With Upstash set up, memory survives restarts. Without it, everything is lost on restart.
 
 ## Seen and typing
 The bot marks messages as seen, pauses briefly, shows the typing bubble for a time that grows with the
@@ -77,8 +94,8 @@ category guess. A human should watch and approve before adding any to `library.j
 Shared reels are NEVER sent to other people automatically.
 
 ## Limits of this first version
-- Render's free plan erases saved data (what people like, which reels they've seen,
-  the submissions list) whenever the server restarts. `library.json` is safe because it lives in GitHub.
+- Without Upstash, Render's free plan erases saved data whenever the server restarts.
+  `library.json` is always safe because it lives in GitHub.
 - It handles one message at a time, which is fine for a few testers, not for hundreds.
 - Only accounts with a role on your Meta app can message it until the app passes Meta's review.
 - It can't verify anyone's age. The bot is told to stop if someone says they are under 18.
