@@ -1,3 +1,4 @@
+
 """
 Reel-share test server.
 
@@ -269,6 +270,14 @@ def send_test():
     except Exception as e:
         return jsonify({"error": scrub(repr(e)), "sent_so_far": results}), 500
     return jsonify({"sent": results})
+
+
+@app.route("/tick")
+def tick():
+    """An outside timer (for example cron-job.org) opens this every ~10 minutes. It also keeps the
+    free Render server awake. Sends the occasional message to people who wrote recently."""
+    check_key()
+    return jsonify({"nudged": buddy.send_nudges()})
 
 
 @app.route("/submissions")
