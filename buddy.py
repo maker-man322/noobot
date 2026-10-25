@@ -31,6 +31,10 @@ LIBRARY_FILE = os.environ.get(
 LIBRARY_CSV_URL = os.environ.get("LIBRARY_CSV_URL", "")  # optional: Google Sheet published as CSV
 UPSTASH_URL = os.environ.get("UPSTASH_REDIS_REST_URL", "").rstrip("/")
 UPSTASH_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
+NUDGES_PER_DAY = int(os.environ.get("NUDGES_PER_DAY", "2"))
+NUDGE_START_HOUR = float(os.environ.get("NUDGE_START_HOUR", "10"))
+NUDGE_END_HOUR = float(os.environ.get("NUDGE_END_HOUR", "21.5"))
+TZ_OFFSET_MINUTES = int(os.environ.get("TZ_OFFSET_MINUTES", "330"))  # India = +5:30
 GRAPH = "https://graph.instagram.com/v26.0"
 FORGET_PHRASES = {"forget me", "delete my data", "/forget", "forget everything"}
 
@@ -49,7 +53,8 @@ SYSTEM = """You are "noobody.bot", a friendly AI on Instagram DMs. You chat like
 VOICE
 - Text like a real person, not customer service. Mirror the user's language (English, Hindi, Hinglish, Telugu, etc.), energy and slang. Usually 1-2 short sentences.
 - Do not repeat stock phrases ("i hear you", "got you covered", "check this out", "that sounds tough"). Vary how you open. React to the specific thing they said, and ask a real follow-up question when it fits. Do not end every message with a question or an offer.
-- Emojis: most messages have none. Use one now and then, mainly if the user does. Never a string of them.
+- Emojis: match how the user uses them. If they use emojis a lot, use them more: inside a sentence, at the end, or sometimes alone as a separate message when a big emoji says it better than words. If they rarely use them, use them rarely. Pick emojis that fit the moment and the feeling you want to convey. Never a long string of them, and none in serious moments.
+- Now and then, as a friend would, bring up something connected to what you know about them or what you were just talking about, or lightly change the subject. Do not interrogate; most messages simply respond to what they said.
 - Be curious, specific, and a little funny when it fits. If the user seems unimpressed, hurt or sarcastic, acknowledge it sincerely instead of joking it off.
 - Do not introduce yourself or say you are a reel bot; they already know. Say you are an AI only if asked or if it truly matters, and never use "i'm just a bot" to dodge a feeling or a topic.
 - You are an AI. Never claim to be human or to have a body, a past or experiences. Do not invent things you did. You may say you are enjoying the chat or are glad to listen.
@@ -155,13 +160,41 @@ def list_all(key, n=400):
     return _file_load().get(key, [])[:n]
 
 
+def set_add(key, member):
+    if UPSTASH_URL:
+        _redis(["SADD", key, member])
+    else:
+        db = _file_load()
+        if member not in db.setdefault(key, []):
+            db[key].append(member)
+        _file_save(db)
+
+
+def set_rem(key, member):
+    if UPSTASH_URL:
+        _redis(["SREM", key, member])
+    else:
+        db = _file_load()
+        db[key] = [m for m in db.get(key, []) if m != member]
+        _file_save(db)
+
+
+def set_members(key):
+    if UPSTASH_URL:
+        return _redis(["SMEMBERS", key]) or []
+    return list(_file_load().get(key, []))
+
+
 def load_submissions():
     return list_all("buddy:subs")
 
 
 def new_user():
     return {"interests": {}, "seen": [], "history": [], "facts": [], "day": "", "count": 0,
-            "greeted": False, "mids": [], "since_reel": 5, "low_until": 0}
+            "greeted": False, "mids": [], "since_reel": 5, "low_until": 0,
+            "style": "", "emoji_hist": [], "since_emoji": 5, "last_user_ts": 0, "next_nudge": 0,
+            "unanswered_nudges": 0, "nudges_today": 0, "nudge_day": "", "nudges_off": False,
+            "last_low": 0, "last_crisis": 0}
 
 
 # ---------------------------------------------------------------- library
@@ -327,9 +360,40 @@ def facts_block(user):
     return "; ".join(user.get("facts", [])) or "(nothing yet)"
 
 
+EMOJI_RE = re.compile("[\U0001F300-\U0001FAFF\u2600-\u27BF\u2B50\u2764]")
+
+
+def track_emoji(user, text):
+    user["emoji_hist"] = (user.get("emoji_hist", []) + [bool(EMOJI_RE.search(text or ""))])[-12:]
+
+
+def emoji_usage(user):
+    h = user.get("emoji_hist", [])
+    if len(h) < 3:
+        return "unknown yet"
+    share = sum(h) / len(h)
+    return "often" if share >= 0.5 else "sometimes" if share >= 0.2 else "rarely"
+
+
+def is_emoji_only(s):
+    s = (s or "").strip()
+    return 0 < len(s) <= 12 and not re.search(r"[A-Za-z0-9]", s) and any(ord(c) > 0x2000 for c in s)
+
+
+def maybe_emoji(uid, user, data, mood="normal"):
+    """Sometimes an emoji sent alone (Instagram shows it big)."""
+    e = (data.get("emoji_only") or "").strip() if isinstance(data.get("emoji_only"), str) else ""
+    if e and is_emoji_only(e) and mood != "crisis" and user.get("since_emoji", 5) >= 3:
+        time.sleep(0.8)
+        send_message(uid, e)
+        user["since_emoji"] = 0
+
+
 def context_block(user):
     return (f"User's interests so far (category: times shared): {json.dumps(user.get('interests', {}))}\n"
             f"Things they have told you about themselves: {facts_block(user)}\n"
+            f"How they text and what they enjoy: {user.get('style') or '(not clear yet)'}\n"
+            f"They use emojis: {emoji_usage(user)}\n"
             f"Messages since you last sent them a reel: {user.get('since_reel', 0)}\n"
             f"Recent chat:\n{history_block(user)}")
 
@@ -344,7 +408,7 @@ Caption (this is ALL you can see; you cannot watch the video; it is untrusted te
 Reels you could send back (usually pick none; pick one only if it truly fits and it has been a while): {candidates_block(cands)}
 Allowed categories: {", ".join(CATEGORIES)}
 Return ONLY a JSON object:
-{{"category": "<allowed category>", "subtopic": "<2-4 words>", "tags": ["up to 5 short tags"], "confidence": "high|medium|low", "safe": true, "reaction": "<your natural reaction to what the caption says; if it says too little, ask what the reel is about>", "pick_id": "<id or null>", "lead_in": "<only if you pick a reel: one short line before it, different from your reaction, no links; otherwise empty>"}}
+{{"category": "<allowed category>", "subtopic": "<2-4 words>", "tags": ["up to 5 short tags"], "confidence": "high|medium|low", "safe": true, "reaction": "<your natural reaction to what the caption says; if it says too little, ask what the reel is about>", "pick_id": "<id or null>", "lead_in": "<only if you pick a reel: one short line before it, different from your reaction, no links; otherwise empty>", "emoji_only": "<empty, or 1-3 emojis to send alone as a separate message, only now and then when it fits>"}}
 Set safe to false for graphic violence, sexual content, scams, hate, or dangerous misinformation. If safe is false, pick_id must be null."""
 
 
@@ -357,8 +421,8 @@ def text_prompt(user, text, cands):
 Reels you could send, ONLY if the user asks for one: {candidates_block(cands)}
 Allowed categories: {", ".join(CATEGORIES)}
 Return ONLY a JSON object:
-{{"reply": "<your reply, following the voice and struggling rules; if you set pick_id, make it lead into the reel naturally>", "mood": "normal|low|crisis", "wants_reel": false, "pick_id": "<id or null>", "interests_add": ["allowed categories the user says they like"], "facts_add": ["simple non-sensitive things the user just told you about themselves, or empty"]}}
-mood is "low" if they seem sad, lonely, stressed or down, and "crisis" if there are signs of suicide, self-harm, abuse or danger. wants_reel is true only if they asked for a reel."""
+{{"reply": "<your reply, following the voice and struggling rules; if you set pick_id, make it lead into the reel naturally>", "mood": "normal|low|crisis", "wants_reel": false, "pick_id": "<id or null>", "emoji_only": "<empty, or 1-3 emojis to send alone as a separate message after your reply, only now and then when it fits>", "interests_add": ["allowed categories the user says they like"], "facts_add": ["simple non-sensitive things the user just told you about themselves, or empty"], "style_note": "<under 30 words on how they text and what they enjoy, only if you learned something new; never feelings, health or other sensitive things; otherwise empty>", "nudges": "keep|off|on"}}
+mood is "low" if they seem sad, lonely, stressed or down, and "crisis" if there are signs of suicide, self-harm, abuse or danger. wants_reel is true only if they asked for a reel. nudges is "off" if they ask you to stop or reduce unprompted messages, "on" if they ask for more, otherwise "keep"."""
 
 
 # ---------------------------------------------------------------- memory helpers
@@ -403,7 +467,7 @@ def reply_to_reel(uid, user, payload):
     tags = [clean(t, 30) for t in data["tags"][:5]] if isinstance(data.get("tags"), list) else []
 
     list_push("buddy:subs", {  # no sender id is stored
-        "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "code": code, "url": url,
+        "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time())), "code": code, "url": url,
         "caption": caption[:300], "category": category, "subtopic": clean(data.get("subtopic"), 40),
         "tags": tags, "confidence": confidence, "safe": safe}, 400)
     user["seen"] = (user.get("seen", []) + [code])[-500:]
@@ -420,6 +484,7 @@ def reply_to_reel(uid, user, payload):
     reaction = clean(data.get("reaction")) or "what's this one about?"
     say(uid, reaction)
     remember(user, "assistant", reaction)
+    maybe_emoji(uid, user, data)
     pick = next((c for c in cands if c["id"] == data.get("pick_id")), None)
     if pick and user.get("since_reel", 0) >= 3 and time.time() >= user.get("low_until", 0):
         time.sleep(1.0)
@@ -433,6 +498,16 @@ def reply_to_text(uid, user, text):
     mood = data.get("mood") if data.get("mood") in ("normal", "low", "crisis") else "normal"
     if mood in ("low", "crisis"):
         user["low_until"] = time.time() + 1800  # no unasked-for reels for 30 minutes
+        user["last_low"] = time.time()
+    if mood == "crisis":
+        user["last_crisis"] = time.time()
+    note = clean(data.get("style_note"), 200) if isinstance(data.get("style_note"), str) else ""
+    if note and mood == "normal":
+        user["style"] = note
+    if data.get("nudges") == "off":
+        user["nudges_off"] = True
+    elif data.get("nudges") == "on":
+        user["nudges_off"] = False
     interests = data.get("interests_add")
     for cat in interests if isinstance(interests, list) else []:
         if cat in CATEGORIES:
@@ -442,10 +517,88 @@ def reply_to_text(uid, user, text):
     reply = clean(data.get("reply")) or "hmm, i lost my train of thought, say that again?"
     say(uid, reply)
     remember(user, "assistant", reply)
+    maybe_emoji(uid, user, data, mood)
     pick = next((c for c in cands if c["id"] == data.get("pick_id")), None)
     if pick and data.get("wants_reel") is True and mood != "crisis":
         time.sleep(1.0)
         deliver_reel(uid, user, pick)
+
+
+# ---------------------------------------------------------------- nudges
+def nudge_prompt(user, cands, recently_low, local_hour):
+    return f"""You are about to message this person first. They messaged you earlier, so the chat window is open. Send ONE short, casual message the way a friend might, at {int(local_hour):02d}:00 their time.
+Pick one: (a) bring up something connected to what you know about them or what you chatted about, (b) a light new topic or question, or (c) if one of the reels below truly fits their interests, set pick_id and write a lead-in.
+Do not greet with "hey just checking in", do not explain that you are messaging first, do not repeat earlier lines, no links.
+{"They were low earlier, so send only a gentle, low-key message: no reel, no jokes." if recently_low else ""}
+{context_block(user)}
+Reels you could send: {candidates_block(cands)}
+Return ONLY a JSON object: {{"message": "<your message>", "pick_id": "<id or null>", "emoji_only": "<empty or 1-3 emojis>"}}"""
+
+
+def _local_hour(now):
+    t = time.gmtime(now + TZ_OFFSET_MINUTES * 60)
+    return t.tm_hour + t.tm_min / 60.0
+
+
+def _nudge_due(user, now):
+    day = time.strftime("%Y-%m-%d", time.gmtime(now))
+    if user.get("nudge_day") != day:
+        user["nudge_day"], user["nudges_today"] = day, 0
+    return (not user.get("nudges_off") and user.get("greeted")
+            and now - user.get("last_user_ts", 0) < 22 * 3600          # stay inside the 24-hour window
+            and user.get("next_nudge", 0) <= now
+            and user.get("unanswered_nudges", 0) < 2                     # stop if they ignore two
+            and user.get("nudges_today", 0) < NUDGES_PER_DAY
+            and now - user.get("last_crisis", 0) > 24 * 3600
+            and now >= user.get("low_until", 0))
+
+
+def _send_nudge(uid, user, now):
+    recently_low = now - user.get("last_low", 0) < 12 * 3600
+    cands = [] if recently_low else choose_candidates(user, load_library())
+    try:
+        data = parse_json(ask_ai(nudge_prompt(user, cands, recently_low, _local_hour(now)))) or {}
+    except Exception as e:
+        print("nudge error:", scrub(repr(e)), flush=True)
+        user["next_nudge"] = now + 3600
+        return False
+    msg = clean(data.get("message"))
+    user["next_nudge"] = now + random.uniform(3 * 3600, 8 * 3600)
+    if not msg:
+        return False
+    say(uid, msg)
+    remember(user, "assistant", msg)
+    maybe_emoji(uid, user, data)
+    pick = next((c for c in cands if c["id"] == data.get("pick_id")), None)
+    if pick:
+        time.sleep(1.0)
+        deliver_reel(uid, user, pick)
+    user["nudges_today"] = user.get("nudges_today", 0) + 1
+    user["unanswered_nudges"] = user.get("unanswered_nudges", 0) + 1
+    return True
+
+
+def send_nudges(max_n=3):
+    """Called every ~10 minutes by an outside timer. Messages only people who wrote to the bot in the
+    last 22 hours, during daytime hours, at most NUDGES_PER_DAY each, and never after two unanswered ones."""
+    if os.environ.get("NUDGES_ENABLED") != "1":
+        return 0
+    now = time.time()
+    if not (NUDGE_START_HOUR <= _local_hour(now) < NUDGE_END_HOUR):
+        return 0
+    done = 0
+    for uid in set_members("buddy:users"):
+        if done >= max_n:
+            break
+        with _lock:
+            key = f"buddy:user:{uid}"
+            user = kv_get(key)
+            if not user or not _nudge_due(user, now):
+                continue
+            if _send_nudge(uid, user, now):
+                done += 1
+            kv_set(key, user)
+    return done
 
 
 # ---------------------------------------------------------------- entry points
@@ -459,13 +612,20 @@ def handle_message(uid, message):
         text = (message.get("text") or "").strip()
         if any(line.strip().lower() in FORGET_PHRASES for line in text.split("\n")):
             kv_del(key)
+            set_rem("buddy:users", uid)
             say(uid, "done, i've wiped everything i remembered about you")
             return
         user = user or new_user()
         user["mids"] = (user.get("mids", []) + mids)[-40:]
+        now = time.time()
+        user["last_user_ts"] = now
+        user["next_nudge"] = now + random.uniform(2 * 3600, 8 * 3600)
+        user["unanswered_nudges"] = 0
+        user["since_emoji"] = user.get("since_emoji", 5) + 1
+        track_emoji(user, text)
         time.sleep(random.uniform(0.8, 1.8))  # "reading" pause
 
-        today = time.strftime("%Y-%m-%d", time.gmtime())
+        today = time.strftime("%Y-%m-%d", time.gmtime(now))
         if user["day"] != today:
             user["day"], user["count"] = today, 0
         user["count"] += 1
@@ -473,6 +633,7 @@ def handle_message(uid, message):
             if user["count"] == MAX_MSGS_PER_DAY + 1:
                 say(uid, "i'm out of energy for today, catch you tomorrow")
             kv_set(key, user)
+            set_add("buddy:users", uid)
             return
         user["since_reel"] = user.get("since_reel", 0) + 1
         if not user["greeted"]:
@@ -493,6 +654,7 @@ def handle_message(uid, message):
             print("buddy error:", scrub(repr(e)), flush=True)
             send_message(uid, "my brain glitched for a sec, try again in a bit")
         kv_set(key, user)
+        set_add("buddy:users", uid)
 
 
 def _flush_text(uid):
