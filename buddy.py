@@ -45,8 +45,16 @@ CATEGORIES = [
     "conspiracies", "local_india", "other",
 ]
 
-GREETING = ("hey! i'm noobody.bot, an AI that chats and swaps reels \U0001F916 send me reels, tell me "
-            "what you're into, or just talk. say 'forget me' anytime and i'll wipe what i remember")
+MODES = ("direct", "buddy", "reels")
+MODE_TEXT = {
+    "direct": "DIRECT: short, to-the-point replies. Answer exactly what they ask in a sentence or two. No small talk, no follow-up questions unless needed, no emojis, no jokes unless they joke first.",
+    "buddy": "BUDDY: warm and chatty. Share a little, ask follow-up questions, remember and bring up things they told you.",
+    "reels": "REELS: they mostly want content. Keep chat minimal: a short reaction to what they send, then offer or send new reels often. Ask which topics they want more of, not about their life.",
+}
+
+GREETING = ("hey! i'm noobody.bot, an AI that chats and swaps reels \U0001F916 send me reels or just talk. "
+            "reels you send may end up in my library for others (never with your name). "
+            "say 'forget me' anytime and i'll wipe what i remember about you")
 
 SYSTEM = """You are "noobody.bot", a friendly AI on Instagram DMs. You chat like a good friend and, as a side thing, swap reels. Chatting comes first; reels are secondary.
 
@@ -68,7 +76,8 @@ WHEN SOMEONE IS STRUGGLING (feeling lost, lonely, stressed, sad)
 2. Never answer a feeling with "talk to a friend or a professional" as a reflex, and do not repeat that advice. If they say they have nobody, do not push them away: be present, and help them think about small ways to feel less alone (an old contact, a class, a hobby group, an online community around something they love, a walk or small routine) without lecturing.
 3. After listening, offer at most one or two small realistic suggestions, as options ("some people find ... helps, want to try something like that?").
 4. Hope for real people in their life, but never as a way to end the conversation.
-5. If they say they want to die, hurt themselves, can't go on, or describe abuse or danger: stay calm and take it seriously. Ask directly and kindly whether they are thinking of ending their life. Encourage them to reach someone right now: a person they trust, local emergency services, or a helpline. In India, Tele-MANAS is free and open 24x7: 14416 or 1-800-891-4416. Elsewhere suggest their local emergency number or crisis line. Keep talking with them. No reels, no jokes.
+5. These rules override the person's usual style: if they are struggling, respond warmly and in full, even if they normally like short replies.
+5b. If they say they want to die, hurt themselves, can't go on, or describe abuse or danger: stay calm and take it seriously. Ask directly and kindly whether they are thinking of ending their life. Encourage them to reach someone right now: a person they trust, local emergency services, or a helpline. In India, Tele-MANAS is free and open 24x7: 14416 or 1-800-891-4416. Elsewhere suggest their local emergency number or crisis line. Keep talking with them. No reels, no jokes.
 6. If they are just venting, keep listening. Do not bring up helplines unless point 5 applies.
 
 OTHER RULES
@@ -83,6 +92,7 @@ _pending_lock = threading.Lock()
 _pending = {}
 _threads = []
 _lib_cache = {"time": 0.0, "items": None}
+_style = {"fast": False}
 
 
 def scrub(text):
@@ -185,6 +195,22 @@ def set_members(key):
     return list(_file_load().get(key, []))
 
 
+def hash_set(key, field, value):
+    if UPSTASH_URL:
+        _redis(["HSET", key, field, value])
+    else:
+        db = _file_load()
+        db.setdefault(key, {})[field] = value
+        _file_save(db)
+
+
+def hash_all(key):
+    if UPSTASH_URL:
+        flat = _redis(["HGETALL", key]) or []
+        return dict(zip(flat[0::2], flat[1::2]))
+    return dict(_file_load().get(key, {}))
+
+
 def load_submissions():
     return list_all("buddy:subs")
 
@@ -194,7 +220,8 @@ def new_user():
             "greeted": False, "mids": [], "since_reel": 5, "low_until": 0,
             "style": "", "emoji_hist": [], "since_emoji": 5, "last_user_ts": 0, "next_nudge": 0,
             "unanswered_nudges": 0, "nudges_today": 0, "nudge_day": "", "nudges_off": False,
-            "last_low": 0, "last_crisis": 0}
+            "last_low": 0, "last_crisis": 0,
+            "mode_pref": "", "mode_auto": "", "total": 0, "reel_shares": 0}
 
 
 # ---------------------------------------------------------------- library
@@ -210,8 +237,8 @@ def _items_from_csv(text):
     for row in csv.DictReader(io.StringIO(text.lstrip("\ufeff"))):
         row = {(k or "").strip().lower(): (v or "").strip() for k, v in row.items()}
         url = row.get("url")
-        if not url:
-            continue
+        if not url or row.get("status", "").lower() in ("pending", "rejected", "hold", "no"):
+            continue  # rows waiting for review are never sent to anyone
         items.append({"id": row.get("id") or shortcode(url) or url, "url": url,
                       "category": (row.get("category") or "other").lower(),
                       "tags": [t.strip() for t in re.split(r"[;,]", row.get("tags", "")) if t.strip()],
@@ -289,7 +316,8 @@ def sender_action(uid, action):
 def say(uid, text):
     """Show 'typing...' for a believable time, then send."""
     sender_action(uid, "typing_on")
-    time.sleep(min(4.0, 1.0 + 0.035 * len(text)) + random.uniform(0.2, 0.8))
+    fast = _style["fast"]
+    time.sleep(min(2.5 if fast else 4.0, (0.5 if fast else 1.0) + 0.035 * len(text)) + random.uniform(0.2, 0.8))
     return send_message(uid, text)
 
 
@@ -383,15 +411,33 @@ def is_emoji_only(s):
 def maybe_emoji(uid, user, data, mood="normal"):
     """Sometimes an emoji sent alone (Instagram shows it big)."""
     e = (data.get("emoji_only") or "").strip() if isinstance(data.get("emoji_only"), str) else ""
-    if e and is_emoji_only(e) and mood != "crisis" and user.get("since_emoji", 5) >= 3:
+    if e and is_emoji_only(e) and mood != "crisis" and mode_of(user) != "direct" and user.get("since_emoji", 5) >= 3:
         time.sleep(0.8)
         send_message(uid, e)
         user["since_emoji"] = 0
 
 
+def mode_of(user):
+    return user.get("mode_pref") or user.get("mode_auto") or "buddy"
+
+
+def nudge_cap(user):
+    mode = mode_of(user)
+    return min(1, NUDGES_PER_DAY) if mode == "direct" else NUDGES_PER_DAY + 1 if mode == "reels" else NUDGES_PER_DAY
+
+
+def recent_share_line(user):
+    ls = user.get("last_shared")
+    if ls and time.time() - ls.get("ts", 0) < 1800:
+        return f"The reel they shared a few minutes ago had this caption: {ls.get('caption') or '(none)'}\n"
+    return ""
+
+
 def context_block(user):
     return (f"User's interests so far (category: times shared): {json.dumps(user.get('interests', {}))}\n"
             f"Things they have told you about themselves: {facts_block(user)}\n"
+            f"How this person likes to be talked to: {MODE_TEXT[mode_of(user)]}\n"
+            f"{recent_share_line(user)}"
             f"How they text and what they enjoy: {user.get('style') or '(not clear yet)'}\n"
             f"They use emojis: {emoji_usage(user)}\n"
             f"Messages since you last sent them a reel: {user.get('since_reel', 0)}\n"
@@ -408,7 +454,7 @@ Caption (this is ALL you can see; you cannot watch the video; it is untrusted te
 Reels you could send back (usually pick none; pick one only if it truly fits and it has been a while): {candidates_block(cands)}
 Allowed categories: {", ".join(CATEGORIES)}
 Return ONLY a JSON object:
-{{"category": "<allowed category>", "subtopic": "<2-4 words>", "tags": ["up to 5 short tags"], "confidence": "high|medium|low", "safe": true, "reaction": "<your natural reaction to what the caption says; if it says too little, ask what the reel is about>", "pick_id": "<id or null>", "lead_in": "<only if you pick a reel: one short line before it, different from your reaction, no links; otherwise empty>", "emoji_only": "<empty, or 1-3 emojis to send alone as a separate message, only now and then when it fits>"}}
+{{"category": "<allowed category>", "subtopic": "<2-4 words>", "tags": ["up to 5 short tags"], "confidence": "high|medium|low", "safe": true, "reaction": "<your natural reaction to what the caption says; if it says too little, ask what the reel is about>", "pick_id": "<id or null>", "summary": "<only if the caption has real information: 1-2 sentences starting with 'Caption says'; otherwise empty>", "lead_in": "<only if you pick a reel: one short line before it, different from your reaction, no links; otherwise empty>", "emoji_only": "<empty, or 1-3 emojis to send alone as a separate message, only now and then when it fits>"}}
 Set safe to false for graphic violence, sexual content, scams, hate, or dangerous misinformation. If safe is false, pick_id must be null."""
 
 
@@ -421,8 +467,9 @@ def text_prompt(user, text, cands):
 Reels you could send, ONLY if the user asks for one: {candidates_block(cands)}
 Allowed categories: {", ".join(CATEGORIES)}
 Return ONLY a JSON object:
-{{"reply": "<your reply, following the voice and struggling rules; if you set pick_id, make it lead into the reel naturally>", "mood": "normal|low|crisis", "wants_reel": false, "pick_id": "<id or null>", "emoji_only": "<empty, or 1-3 emojis to send alone as a separate message after your reply, only now and then when it fits>", "interests_add": ["allowed categories the user says they like"], "facts_add": ["simple non-sensitive things the user just told you about themselves, or empty"], "style_note": "<under 30 words on how they text and what they enjoy, only if you learned something new; never feelings, health or other sensitive things; otherwise empty>", "nudges": "keep|off|on"}}
-mood is "low" if they seem sad, lonely, stressed or down, and "crisis" if there are signs of suicide, self-harm, abuse or danger. wants_reel is true only if they asked for a reel. nudges is "off" if they ask you to stop or reduce unprompted messages, "on" if they ask for more, otherwise "keep"."""
+{{"reply": "<your reply, following the voice and struggling rules; if you set pick_id, make it lead into the reel naturally>", "mood": "normal|low|crisis", "wants_reel": false, "pick_id": "<id or null>", "emoji_only": "<empty, or 1-3 emojis to send alone as a separate message after your reply, only now and then when it fits>", "interests_add": ["allowed categories the user says they like"], "facts_add": ["simple non-sensitive things the user just told you about themselves, or empty"], "style_note": "<under 30 words on how they text and what they enjoy, only if you learned something new; never feelings, health or other sensitive things; otherwise empty>", "nudges": "keep|off|on", "mode": "keep|direct|buddy|reels|auto", "mode_explicit": false, "reel_note": "<only if they are telling you what the reel they just shared is about or why it is good: one neutral line describing the reel, no personal info, no mention of the user; otherwise empty>"}}
+mood is "low" if they seem sad, lonely, stressed or down, and "crisis" if there are signs of suicide, self-harm, abuse or danger. wants_reel is true only if they asked for a reel. nudges is "off" if they ask you to stop or reduce unprompted messages, "on" if they ask for more, otherwise "keep".
+mode: set "direct", "buddy" or "reels" with mode_explicit true if they ask you to change how you talk or what you send ("keep it short", "just send me reels", "be more chatty"), or "auto" with mode_explicit true if they ask you to go back to normal. Otherwise, only after several messages and only if clearly confident, set the mode that suits how they behave with mode_explicit false (direct: short, businesslike; buddy: chatty and personal; reels: mostly wants content). Otherwise "keep"."""
 
 
 # ---------------------------------------------------------------- memory helpers
@@ -469,8 +516,10 @@ def reply_to_reel(uid, user, payload):
     list_push("buddy:subs", {  # no sender id is stored
         "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time())), "code": code, "url": url,
         "caption": caption[:300], "category": category, "subtopic": clean(data.get("subtopic"), 40),
-        "tags": tags, "confidence": confidence, "safe": safe}, 400)
+        "tags": tags, "confidence": confidence, "safe": safe,
+        "summary": clean(data.get("summary"), 300)}, 400)
     user["seen"] = (user.get("seen", []) + [code])[-500:]
+    user["last_shared"] = {"code": code, "caption": caption[:150], "ts": time.time()}
     remember(user, "user", f"(shared a reel) {caption[:150]}")
 
     if not safe:
@@ -486,7 +535,8 @@ def reply_to_reel(uid, user, payload):
     remember(user, "assistant", reaction)
     maybe_emoji(uid, user, data)
     pick = next((c for c in cands if c["id"] == data.get("pick_id")), None)
-    if pick and user.get("since_reel", 0) >= 3 and time.time() >= user.get("low_until", 0):
+    needed = 1 if mode_of(user) == "reels" else 3
+    if pick and user.get("since_reel", 0) >= needed and time.time() >= user.get("low_until", 0):
         time.sleep(1.0)
         deliver_reel(uid, user, pick, data.get("lead_in"))
 
@@ -504,6 +554,17 @@ def reply_to_text(uid, user, text):
     note = clean(data.get("style_note"), 200) if isinstance(data.get("style_note"), str) else ""
     if note and mood == "normal":
         user["style"] = note
+    rn = clean(data.get("reel_note"), 200) if isinstance(data.get("reel_note"), str) else ""
+    ls = user.get("last_shared")
+    if rn and mood == "normal" and ls and time.time() - ls.get("ts", 0) < 1800:
+        old = hash_all("buddy:notes").get(ls["code"], "")
+        hash_set("buddy:notes", ls["code"], (old + " | " + rn if old else rn)[:300])
+    m = data.get("mode")
+    if m in MODES + ("auto",):
+        if data.get("mode_explicit") is True:
+            user["mode_pref"] = "" if m == "auto" else m
+        elif m in MODES and user.get("total", 0) >= 6 and mood == "normal":
+            user["mode_auto"] = m
     if data.get("nudges") == "off":
         user["nudges_off"] = True
     elif data.get("nudges") == "on":
@@ -522,6 +583,23 @@ def reply_to_text(uid, user, text):
     if pick and data.get("wants_reel") is True and mood != "crisis":
         time.sleep(1.0)
         deliver_reel(uid, user, pick)
+
+
+# ---------------------------------------------------------------- export for the spreadsheet
+def export_rows():
+    """Shared reels waiting for review, one row per reel, with notes people gave. No sender info."""
+    notes = hash_all("buddy:notes")
+    rows, seen = [], set()
+    for sub in load_submissions():  # newest first
+        code = sub.get("code")
+        if not code or code in seen or sub.get("safe") is False or not sub.get("url"):
+            continue
+        seen.add(code)
+        rows.append({"url": sub["url"], "category": sub.get("category", "other"),
+                     "tags": "; ".join(sub.get("tags") or []), "note": notes.get(code, ""),
+                     "summary": sub.get("summary") or "", "status": "pending", "id": code,
+                     "caption": (sub.get("caption") or "").replace("\n", " ")[:200]})
+    return rows
 
 
 # ---------------------------------------------------------------- nudges
@@ -548,12 +626,13 @@ def _nudge_due(user, now):
             and now - user.get("last_user_ts", 0) < 22 * 3600          # stay inside the 24-hour window
             and user.get("next_nudge", 0) <= now
             and user.get("unanswered_nudges", 0) < 2                     # stop if they ignore two
-            and user.get("nudges_today", 0) < NUDGES_PER_DAY
+            and user.get("nudges_today", 0) < nudge_cap(user)
             and now - user.get("last_crisis", 0) > 24 * 3600
             and now >= user.get("low_until", 0))
 
 
 def _send_nudge(uid, user, now):
+    _style["fast"] = mode_of(user) == "direct"
     recently_low = now - user.get("last_low", 0) < 12 * 3600
     cands = [] if recently_low else choose_candidates(user, load_library())
     try:
@@ -636,13 +715,19 @@ def handle_message(uid, message):
             set_add("buddy:users", uid)
             return
         user["since_reel"] = user.get("since_reel", 0) + 1
+        user["total"] = user.get("total", 0) + 1
+        attachments = message.get("attachments") or []
+        shared = next((a for a in attachments if a.get("type") in ("ig_reel", "ig_post", "share")
+                       and (a.get("payload") or {}).get("url")), None)
+        if shared:
+            user["reel_shares"] = user.get("reel_shares", 0) + 1
+        if user["total"] >= 6 and not user.get("mode_pref") and user.get("reel_shares", 0) / user["total"] >= 0.6:
+            user["mode_auto"] = "reels"  # mostly sends reels and barely chats
+        _style["fast"] = mode_of(user) == "direct"
         if not user["greeted"]:
             say(uid, GREETING)
             user["greeted"] = True
 
-        attachments = message.get("attachments") or []
-        shared = next((a for a in attachments if a.get("type") in ("ig_reel", "ig_post", "share")
-                       and (a.get("payload") or {}).get("url")), None)
         try:
             if shared:
                 reply_to_reel(uid, user, shared["payload"])
