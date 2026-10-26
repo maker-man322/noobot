@@ -91,6 +91,17 @@ falls back to `library.json`. Anyone with the link can read the sheet, so only p
 Why the notes matter: the bot cannot watch videos. Whatever you write in `note` and `summary` is
 everything it knows about that reel, so write what the reel really says, not what you guess.
 
+## Different styles for different people
+Each person gets one of three styles:
+- **direct**: short, to the point, no small talk, no emojis, quicker typing, at most 1 message-first per day.
+- **buddy** (default): warm and chatty, asks follow-ups, brings up things they told it.
+- **reels**: mostly content. Minimal chat, a new reel sent more often, one extra message-first per day.
+How it picks: a person can ask ("keep it short", "just send me reels", "be more chatty", "go back to normal")
+and the bot remembers. Otherwise, after about 6 messages, it guesses from behaviour: someone who mostly sends
+reels and barely chats becomes "reels", and the AI can suggest "direct" or "buddy" from how they write.
+An explicit request always wins over a guess. If someone is struggling, the bot drops the style and responds warmly.
+Saying "forget me" resets the style too.
+
 ## What the bot remembers about each person
 - Interests (a tally per category), reels already seen, the last 12 messages, and simple things they
   tell it ("supports RCB"). It is told not to keep sensitive things (health, religion, politics, money,
@@ -102,6 +113,21 @@ everything it knows about that reel, so write what the reel really says, not wha
 ## Seen and typing
 The bot marks messages as seen, pauses briefly, shows the typing bubble for a time that grows with the
 message length, then sends. The pauses are in the `say()` function in `buddy.py`.
+
+## 5c. Collect the reels people share into your spreadsheet
+The bot saves every reel people share (link, caption, the AI's category guess, and any note the person gave
+in the next 30 minutes, such as "it's a cheap 30 day plan to learn python"). Nothing is sent to anyone until
+you approve it.
+1. In the same spreadsheet, add a new tab called `Submissions`. Do NOT publish this tab.
+2. In cell A1 of that tab, paste:
+   `=IMPORTDATA("https://YOUR-ADDRESS/submissions.csv?key=YOUR_REPORT_KEY")`
+3. The tab fills with: url, category, tags, note, summary, status, id, caption. Google refreshes it
+   from time to time, so new shares appear on their own.
+4. Open each link, watch the reel, fix the category and note, and write the `summary`.
+5. Copy the approved rows (paste as values only) into your published Library tab and change `status` to
+   `approved`, or delete the status cell. Rows whose status is `pending`, `rejected`, `hold` or `no` are
+   never sent to anyone.
+Unsafe reels are left out of the list. The list never contains who shared a reel.
 
 ## 6. Review what people share
 Open `https://YOUR-ADDRESS/submissions?key=YOUR_REPORT_KEY`. It lists shared reels with the AI's
