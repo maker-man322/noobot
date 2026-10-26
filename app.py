@@ -1,4 +1,3 @@
-
 """
 Reel-share test server.
 
@@ -18,7 +17,7 @@ from urllib.parse import urlparse
 
 import requests
 import buddy
-from flask import Flask, abort, jsonify, request, send_from_directory
+from flask import Flask, Response, abort, jsonify, request, send_from_directory
 from markupsafe import escape
 
 app = Flask(__name__)
@@ -227,7 +226,7 @@ def privacy():
 <h2>How we use it</h2>
 <p>Only to test whether shared content can be received and processed. It is not sold and not used for advertising. To write replies, message text and reel captions are sent to an AI provider (Google Gemini or Anthropic), which may process them under its own terms.</p>
 <h2>Storage and deletion</h2>
-<p>To let the bot remember you, your recent messages, interests and simple facts you tell it are stored in a hosted database. Say \'forget me\' to the bot, or email us at the address below, and we delete them. Everything is deleted when the test ends.</p>
+<p>Reels you share (the link, the caption and any note you give about the reel, but never your name) may be reviewed by a person and may be added to the bot\'s library for other people; because they are not tied to you, saying \'forget me\' cannot remove them. To let the bot remember you, your recent messages, interests and simple facts you tell it are stored in a hosted database. Say \'forget me\' to the bot, or email us at the address below, and we delete them. Everything is deleted when the test ends.</p>
 <h2>Contact</h2>
 <p>{email}</p>
 </body></html>"""
@@ -278,6 +277,21 @@ def tick():
     free Render server awake. Sends the occasional message to people who wrote recently."""
     check_key()
     return jsonify({"nudged": buddy.send_nudges()})
+
+
+@app.route("/submissions.csv")
+def submissions_csv():
+    """Same list as /submissions, as a CSV a Google Sheet can pull in with IMPORTDATA."""
+    check_key()
+    import csv
+    import io
+    out = io.StringIO()
+    w = csv.writer(out)
+    cols = ["url", "category", "tags", "note", "summary", "status", "id", "caption"]
+    w.writerow(cols)
+    for r in buddy.export_rows():
+        w.writerow([r[c] for c in cols])
+    return Response(out.getvalue(), mimetype="text/csv")
 
 
 @app.route("/submissions")
